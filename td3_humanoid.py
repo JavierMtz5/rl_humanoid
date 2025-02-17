@@ -2,89 +2,88 @@ import gymnasium as gym
 import torch
 from stable_baselines3 import TD3
 from stable_baselines3.common.noise import NormalActionNoise
-from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnRewardThreshold, EvalCallback
-from stable_baselines3.common.monitor import Monitor
-import numpy as np
-import matplotlib.pyplot as plt
+from stable_baselines3.common.callbacks import BaseCallback
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
+class StopTrainingOnEpisodes(BaseCallback):
+    def __init__(self, max_episodes: int, save_freq: int, verbose=1):
+        super().__init__(verbose)
+        self.max_episodes = max_episodes
+        self.save_freq = save_freq
+        self.episode_count = 0
 
-# env = gym.make("Humanoid-v5", render_mode='rgb_array', width=640, height=480)
-# env = gym.make("Humanoid-v5", render_mode='human')
+    def _on_step(self) -> bool:
+        # Check if the episode has ended
+        dones = self.locals.get("dones", [False])
+        if any(dones):
+            self.episode_count += 1
+            # Save model every 'save_freq' episodes
+            if self.episode_count % self.save_freq == 0:
+                checkpoint_path = f"{os.getcwd()}/checkpoints/td3_checkpoint_ep_{self.episode_count}"
+                self.model.save(checkpoint_path)
+                if self.verbose:
+                    print(f"Checkpoint created: {checkpoint_path}")
 
-# _ = env.reset()
-# action = np.zeros(shape=(17,))
-# for i in range(1000):
-#     env.step(action)
-#     env.render()
-#     # frame = env.render()
-#     # plt.imshow(frame)
-#     # plt.axis("off")
-#     # plt.pause(0.01)
+        # Stop training if max episodes reached
+        return self.episode_count < self.max_episodes
 
-# env.close()
+class TD3Agent:
+    def __init__(self, gym_env: str):
+        self.env = gym.make(gym_env, render_mode='human')
 
-# print('Test finished')
+    def train_td3(self, max_episodes: int, max_timesteps: int, save_freq: int, log_interval: int) -> None:
+        """Trains the TD3 agent on the given environment"""
+        # Initialize noise process
+        n_actions = self.env.action_space.shape[-1]
+        action_noise = NormalActionNoise(mean=0, sigma=0.1 * torch.ones(n_actions))
 
-'=============================================================================================='
+        # Create TD3 model using SB3
+        model = TD3(
+            "MlpPolicy", 
+            self.env, 
+            action_noise=action_noise,
+            learning_rate=3e-4, 
+            buffer_size=int(1e6),  
+            batch_size=256,        
+            gamma=0.99,            
+            tau=0.005,             
+            policy_delay=2,        
+            train_freq=(1, "episode"),  
+            gradient_steps=-1,      
+            verbose=1
+        )
 
-# def train() -> None:
-#     """
-#     Training loop
-#     """
-#     # Create environment and agent
-#     environment: gym.Env = gym.make(GAME)
-#     policy_kwargs = dict(activation_fn=ACTIVATION_FN, net_arch=NET_ARCH)
-#     agent: algorithm.OnPolicyAlgorithm = A2C("MlpPolicy", environment, policy_kwargs=policy_kwargs,
-#                                              n_steps=N_STEPS, learning_rate=LEARNING_RATE, gamma=GAMMA, verbose=1)
+        callback = StopTrainingOnEpisodes(max_episodes=max_episodes, save_freq=save_freq)
+        model.learn(total_timesteps=max_timesteps, log_interval=log_interval, callback=callback)
 
-#     # Train the agent
-#     callback_on_best: BaseCallback = StopTrainingOnRewardThreshold(reward_threshold=MAX_EPISODE_DURATION, verbose=1)
-#     eval_callback: BaseCallback = EvalCallback(Monitor(environment), callback_on_new_best=callback_on_best,
-#                                                eval_freq=EVAL_FREQ, n_eval_episodes=AVERAGING_WINDOW)
-#     # Set huge number of steps because termination is based on the callback
-#     agent.learn(int(1e10), callback=eval_callback)
+        model.save("td3_humanoid")
+        print('Agent was trained and model was saved')
 
-#     # Save the agent
-#     agent.save(MODEL_FILE)
+    def evaluate_model(self, checkpoint_path: str) -> None:
+        """Evaluates the performance of the agent"""
+        model = TD3.load(checkpoint_path)
 
-'=============================================================================================='
+        obs, _ = self.env.reset()
+        while True:
+            action, _ = model.predict(obs)
+            obs, _, dones, _, _ = self.env.step(action)
+            self.env.render()
+            if dones:
+                obs, _ = self.env.reset()
 
-env = gym.make('Humanoid-v5')
 
-# Action space noise (for exploration)
-n_actions = env.action_space.shape[-1]
-action_noise = NormalActionNoise(mean=0, sigma=0.1 * torch.ones(n_actions))
+def main():
+    td3_agent = TD3Agent(gym_env='Humanoid-v5')
+    td3_agent.train_td3(
+        max_episodes=10000,
+        max_timesteps=1.5e7,
+        save_freq=500,
+        log_interval=100
+    )
+    # model_path = os.path.join(os.getcwd(), 'checkpoints', 'td3_checkpoint_ep_4500.zip')
+    # td3_agent.evaluate_model(model_path)
 
-# Create TD3 model
-model = TD3(
-    "MlpPolicy", 
-    env, 
-    action_noise=action_noise,
-    learning_rate=3e-4, 
-    buffer_size=100000,  
-    batch_size=256,        
-    gamma=0.99,            
-    tau=0.005,             
-    policy_delay=2,        
-    train_freq=(1, "episode"),  
-    gradient_steps=-1,      
-    verbose=1
-)
 
-# callback_on_best: BaseCallback = StopTrainingOnRewardThreshold(reward_threshold=MAX_EPISODE_DURATION, verbose=1)
-# eval_callback: BaseCallback = EvalCallback(Monitor(environment), callback_on_new_best=callback_on_best,
-#                                            eval_freq=EVAL_FREQ, n_eval_episodes=AVERAGING_WINDOW)
-model.learn(total_timesteps=10e6, log_interval=1000)
-
-model.save("td3_humanoid_1")
-del model
-
-model = TD3.load("td3_pendulum")
-
-obs = env.reset()
-while True:
-    action, _states = model.predict(obs)
-    obs, rewards, dones, info = env.step(action)
-    env.render()
+if __name__ == '__main__':
+    main()
